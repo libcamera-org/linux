@@ -35,7 +35,7 @@
 /*
  * FIXME: non-preview resolutions are currently broken
  */
-#define ENABLE_NON_PREVIEW	0
+#define ENABLE_NON_PREVIEW	1
 
 #define OV5693_POWER_UP_RETRY_NUM 5
 
@@ -212,6 +212,9 @@ struct ov5693_resolution {
 	u8 bin_factor_y;
 	u8 bin_mode;
 	bool used;
+
+	/* Analog crop rectangle. */
+	struct v4l2_rect crop;
 };
 
 struct ov5693_format {
@@ -236,6 +239,9 @@ struct ov5693_device {
 	struct mutex input_lock;
 	struct v4l2_ctrl_handler ctrl_handler;
 
+	/* Current mode */
+	const struct ov5693_resolution *mode;
+
 	struct camera_sensor_platform_data *platform_data;
 	ktime_t timestamp_t_focus_abs;
 	int vt_pix_clk_freq_mhz;
@@ -257,6 +263,9 @@ struct ov5693_device {
 	struct gpio_descs *dep_gpios;
 
 	bool has_vcm;
+	struct i2c_client *i2c_client;
+
+	struct v4l2_ctrl *hblank;
 };
 
 enum ov5693_tok_type {
@@ -1399,12 +1408,18 @@ struct ov5693_resolution ov5693_res_video[] = {
 		.bin_factor_y = 1,
 		.bin_mode = 0,
 		.regs = ov5693_2592x1944_30fps,
+		.crop = {
+			.left = 0,
+			.top = 0,
+			.width = 2592,
+			.height = 1944
+		},
 	},
 };
 
 #define N_RES_VIDEO (ARRAY_SIZE(ov5693_res_video))
 #endif
 
-static struct ov5693_resolution *ov5693_res = ov5693_res_preview;
-static unsigned long N_RES = N_RES_PREVIEW;
+static struct ov5693_resolution *ov5693_res = ov5693_res_video;
+static unsigned long N_RES = N_RES_VIDEO;
 #endif

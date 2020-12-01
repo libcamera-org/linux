@@ -56,6 +56,54 @@ module_param(up_delay, uint, 0644);
 MODULE_PARM_DESC(up_delay,
 		 "Delay prior to the first CCI transaction for ov5693");
 
+
+/* Exposure/gain */
+
+#define OV5693_EXPOSURE_CTRL_HH_REG		0x3500
+#define OV5693_EXPOSURE_CTRL_HH(v)		(((v) & GENMASK(18, 16)) >> 16)
+#define OV5693_EXPOSURE_CTRL_H_REG		0x3501
+#define OV5693_EXPOSURE_CTRL_H(v)		(((v) & GENMASK(15, 8)) >> 8)
+#define OV5693_EXPOSURE_CTRL_L_REG		0x3502
+#define OV5693_EXPOSURE_CTRL_L(v)		((v) & GENMASK(7, 0))
+#define OV5693_EXPOSURE_GAIN_MANUAL_REG		0x3509
+
+#define OV5693_GAIN_CTRL_H_REG			0x3504
+#define OV5693_GAIN_CTRL_H(v)			(((v) & GENMASK(9, 8)) >> 8)
+#define OV5693_GAIN_CTRL_L_REG			0x3505
+#define OV5693_GAIN_CTRL_L(v)			((v) & GENMASK(7, 0))
+
+#define OV5693_FORMAT1_REG			0x3820
+#define OV5693_FORMAT1_FLIP_VERT_ISP_EN		BIT(2)
+#define OV5693_FORMAT1_FLIP_VERT_SENSOR_EN	BIT(1)
+#define OV5693_FORMAT2_REG			0x3821
+#define OV5693_FORMAT2_HSYNC_EN			BIT(6)
+#define OV5693_FORMAT2_FST_VBIN_EN		BIT(5)
+#define OV5693_FORMAT2_FST_HBIN_EN		BIT(4)
+#define OV5693_FORMAT2_ISP_HORZ_VAR2_EN		BIT(3)
+#define OV5693_FORMAT2_FLIP_HORZ_ISP_EN		BIT(2)
+#define OV5693_FORMAT2_FLIP_HORZ_SENSOR_EN	BIT(1)
+#define OV5693_FORMAT2_SYNC_HBIN_EN		BIT(0)
+
+/* ISP */
+
+#define OV5693_ISP_CTRL0_REG			0x5000
+#define OV5693_ISP_CTRL0_LENC_EN		BIT(7)
+#define OV5693_ISP_CTRL0_WHITE_BALANCE_EN	BIT(4)
+#define OV5693_ISP_CTRL0_DPC_BLACK_EN		BIT(2)
+#define OV5693_ISP_CTRL0_DPC_WHITE_EN		BIT(1)
+#define OV5693_ISP_CTRL1_REG			0x5001
+#define OV5693_ISP_CTRL1_BLC_EN			BIT(0)
+
+/* native and active pixel array size. */
+#define OV5693_NATIVE_WIDTH		2688U
+#define OV5693_NATIVE_HEIGHT		1984U
+#define OV5693_PIXEL_ARRAY_LEFT		48U
+#define OV5693_PIXEL_ARRAY_TOP		20U
+#define OV5693_PIXEL_ARRAY_WIDTH	2592U
+#define OV5693_PIXEL_ARRAY_HEIGHT	1944U
+
+#define	OV5693_PPL_DEFAULT		2800
+
 static int vcm_ad_i2c_wr8(struct i2c_client *client, u8 reg, u8 val)
 {
 	int err;
@@ -414,169 +462,6 @@ static int ov5693_write_reg_array(struct i2c_client *client,
 	return __ov5693_flush_reg_array(client, &ctrl);
 }
 
-static long __ov5693_set_exposure(struct v4l2_subdev *sd, int coarse_itg,
-				  int gain, int digitgain)
-
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct ov5693_device *dev = to_ov5693_sensor(sd);
-	u16 vts, hts;
-	int ret, exp_val;
-
-	hts = ov5693_res[dev->fmt_idx].pixels_per_line;
-	vts = ov5693_res[dev->fmt_idx].lines_per_frame;
-	/*
-	 * If coarse_itg is larger than 1<<15, can not write to reg directly.
-	 * The way is to write coarse_itg/2 to the reg, meanwhile write 2*hts
-	 * to the reg.
-	 */
-	if (coarse_itg > (1 << 15)) {
-		hts = hts * 2;
-		coarse_itg = (int)coarse_itg / 2;
-	}
-	/* group hold */
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_GROUP_ACCESS, 0x00);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_GROUP_ACCESS);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_TIMING_HTS_H, (hts >> 8) & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_TIMING_HTS_H);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_TIMING_HTS_L, hts & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_TIMING_HTS_L);
-		return ret;
-	}
-	/* Increase the VTS to match exposure + MARGIN */
-	if (coarse_itg > vts - OV5693_INTEGRATION_TIME_MARGIN)
-		vts = (u16)coarse_itg + OV5693_INTEGRATION_TIME_MARGIN;
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_TIMING_VTS_H, (vts >> 8) & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_TIMING_VTS_H);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_TIMING_VTS_L, vts & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_TIMING_VTS_L);
-		return ret;
-	}
-
-	/* set exposure */
-
-	/* Lower four bit should be 0*/
-	exp_val = coarse_itg << 4;
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_EXPOSURE_L, exp_val & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_EXPOSURE_L);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_EXPOSURE_M, (exp_val >> 8) & 0xFF);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_EXPOSURE_M);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_EXPOSURE_H, (exp_val >> 16) & 0x0F);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_EXPOSURE_H);
-		return ret;
-	}
-
-	/* Analog gain */
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_AGC_L, gain & 0xff);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_AGC_L);
-		return ret;
-	}
-
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_AGC_H, (gain >> 8) & 0xff);
-	if (ret) {
-		dev_err(&client->dev, "%s: write %x error, aborted\n",
-			__func__, OV5693_AGC_H);
-		return ret;
-	}
-
-	/* Digital gain */
-	if (digitgain) {
-		ret = ov5693_write_reg(client, OV5693_16BIT,
-				       OV5693_MWB_RED_GAIN_H, digitgain);
-		if (ret) {
-			dev_err(&client->dev, "%s: write %x error, aborted\n",
-				__func__, OV5693_MWB_RED_GAIN_H);
-			return ret;
-		}
-
-		ret = ov5693_write_reg(client, OV5693_16BIT,
-				       OV5693_MWB_GREEN_GAIN_H, digitgain);
-		if (ret) {
-			dev_err(&client->dev, "%s: write %x error, aborted\n",
-				__func__, OV5693_MWB_RED_GAIN_H);
-			return ret;
-		}
-
-		ret = ov5693_write_reg(client, OV5693_16BIT,
-				       OV5693_MWB_BLUE_GAIN_H, digitgain);
-		if (ret) {
-			dev_err(&client->dev, "%s: write %x error, aborted\n",
-				__func__, OV5693_MWB_RED_GAIN_H);
-			return ret;
-		}
-	}
-
-	/* End group */
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_GROUP_ACCESS, 0x10);
-	if (ret)
-		return ret;
-
-	/* Delay launch group */
-	ret = ov5693_write_reg(client, OV5693_8BIT,
-			       OV5693_GROUP_ACCESS, 0xa0);
-	if (ret)
-		return ret;
-	return ret;
-}
-
-static int ov5693_set_exposure(struct v4l2_subdev *sd, int exposure,
-			       int gain, int digitgain)
-{
-	struct ov5693_device *dev = to_ov5693_sensor(sd);
-	int ret;
-
-	mutex_lock(&dev->input_lock);
-	ret = __ov5693_set_exposure(sd, exposure, gain, digitgain);
-	mutex_unlock(&dev->input_lock);
-
-	return ret;
-}
-
 static int ov5693_read_otp_reg_array(struct i2c_client *client, u16 size,
 				     u16 addr, u8 *buf)
 {
@@ -712,6 +597,56 @@ static void *ov5693_otp_read(struct v4l2_subdev *sd)
 	return buf;
 }
 
+static int ov5693_update_bits(struct ov5693_device *sensor, u16 address,
+			      u16 mask, u16 bits)
+{
+	u16 value = 0;
+	int ret;
+
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT, address, &value);
+	if (ret)
+		return ret;
+
+	value &= ~mask;
+	value |= bits;
+
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT, address, value);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+/* Flip */
+
+static int ov5693_flip_vert_configure(struct ov5693_device *sensor, bool enable)
+{
+	u8 bits = OV5693_FORMAT1_FLIP_VERT_ISP_EN |
+		  OV5693_FORMAT1_FLIP_VERT_SENSOR_EN;
+	int ret;
+
+	ret = ov5693_update_bits(sensor, OV5693_FORMAT1_REG, bits,
+				 enable ? bits : 0);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int ov5693_flip_horz_configure(struct ov5693_device *sensor, bool enable)
+{
+	u8 bits = OV5693_FORMAT2_FLIP_HORZ_ISP_EN |
+		  OV5693_FORMAT2_FLIP_HORZ_SENSOR_EN;
+	int ret;
+
+	ret = ov5693_update_bits(sensor, OV5693_FORMAT2_REG, bits,
+				 enable ? bits : 0);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
 /*
  * This returns the exposure time being used. This should only be used
  * for filling in EXIF data, not for actual image processing.
@@ -830,6 +765,106 @@ static int ov5693_t_focus_rel(struct v4l2_subdev *sd, s32 value)
 #define DELAY_PER_STEP_NS	1000000
 #define DELAY_MAX_PER_STEP_NS	(1000000 * 1023)
 
+/* Exposure */
+
+static int ov5693_get_exposure(struct ov5693_device *sensor)
+{
+	u16 reg_v, reg_v2;
+	int ret = 0;
+
+	/* get exposure */
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT,
+			      OV5693_EXPOSURE_L,
+			      &reg_v);
+	if (ret)
+		return ret;
+
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT,
+			      OV5693_EXPOSURE_M,
+			      &reg_v2);
+	if (ret)
+		return ret;
+
+	reg_v += reg_v2 << 8;
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT,
+			      OV5693_EXPOSURE_H,
+			      &reg_v2);
+	if (ret)
+		return ret;
+
+	printk("exposure set to: %u\n", reg_v + (((u32)reg_v2 << 16)));
+	return ret;
+}
+
+static int ov5693_exposure_configure(struct ov5693_device *sensor, u32 exposure)
+{
+	int ret;
+
+	ov5693_get_exposure(sensor);
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT,
+			OV5693_EXPOSURE_CTRL_HH_REG, OV5693_EXPOSURE_CTRL_HH(exposure));
+	if (ret)
+		return ret;
+
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT,
+			OV5693_EXPOSURE_CTRL_H_REG, OV5693_EXPOSURE_CTRL_H(exposure));
+	if (ret)
+		return ret;
+
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT,
+			OV5693_EXPOSURE_CTRL_L_REG, OV5693_EXPOSURE_CTRL_L(exposure));
+	if (ret)
+		return ret;
+	ov5693_get_exposure(sensor);
+
+	return 0;
+}
+
+/* Gain */
+
+static int ov5693_get_gain(struct ov5693_device *sensor)
+{
+	u16 reg_v, reg_v2;
+	int ret = 0;
+
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT,
+			      OV5693_GAIN_CTRL_L_REG,
+			      &reg_v);
+	if (ret)
+		return ret;
+
+	ret = ov5693_read_reg(sensor->i2c_client, OV5693_8BIT,
+			      OV5693_GAIN_CTRL_H_REG,
+			      &reg_v2);
+	if (ret)
+		return ret;
+
+	reg_v += reg_v2 << 8;
+
+	printk("gain set to: %u\n", reg_v);
+	return ret;
+}
+static int ov5693_gain_configure(struct ov5693_device *sensor, u32 gain)
+{
+	int ret;
+
+	ov5693_get_gain(sensor);
+	ov5693_write_reg(sensor->i2c_client, OV5693_8BIT, OV5693_EXPOSURE_GAIN_MANUAL_REG, 0x8);
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT, OV5693_GAIN_CTRL_H_REG,
+			   OV5693_GAIN_CTRL_H(gain));
+	if (ret)
+		return ret;
+
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT, OV5693_GAIN_CTRL_L_REG,
+			   OV5693_GAIN_CTRL_L(gain));
+	if (ret)
+		return ret;
+
+	ov5693_get_gain(sensor);
+
+	return 0;
+}
+
 static int ov5693_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct ov5693_device *dev =
@@ -848,6 +883,24 @@ static int ov5693_s_ctrl(struct v4l2_ctrl *ctrl)
 			__func__, ctrl->val);
 		ret = ov5693_t_focus_rel(&dev->sd, ctrl->val);
 		break;
+	case V4L2_CID_EXPOSURE:
+		dev_dbg(&client->dev, "%s: CID_EXPOSURE:%d.\n",
+			__func__, ctrl->val);
+		ret = ov5693_exposure_configure(dev, ctrl->val);
+		if (ret)
+			return ret;
+		break;
+	case V4L2_CID_GAIN:
+		dev_dbg(&client->dev, "%s: CID_GAIN:%d.\n",
+			__func__, ctrl->val);
+		ret = ov5693_gain_configure(dev, ctrl->val);
+		if (ret)
+			return ret;
+		break;
+	case V4L2_CID_HFLIP:
+		return ov5693_flip_horz_configure(dev, !!ctrl->val);
+	case V4L2_CID_VFLIP:
+		return ov5693_flip_vert_configure(dev, !!ctrl->val);
 	default:
 		ret = -EINVAL;
 	}
@@ -874,25 +927,14 @@ static int ov5693_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 	return ret;
 }
 
-static const struct v4l2_ctrl_ops ctrl_ops = {
+static const struct v4l2_ctrl_ops ov5693_ctrl_ops = {
 	.s_ctrl = ov5693_s_ctrl,
 	.g_volatile_ctrl = ov5693_g_volatile_ctrl
 };
 
 static const struct v4l2_ctrl_config ov5693_controls[] = {
 	{
-		.ops = &ctrl_ops,
-		.id = V4L2_CID_EXPOSURE_ABSOLUTE,
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.name = "exposure",
-		.min = 0x0,
-		.max = 0xffff,
-		.step = 0x01,
-		.def = 0x00,
-		.flags = 0,
-	},
-	{
-		.ops = &ctrl_ops,
+		.ops = &ov5693_ctrl_ops,
 		.id = V4L2_CID_FOCUS_ABSOLUTE,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.name = "focus move absolute",
@@ -903,7 +945,7 @@ static const struct v4l2_ctrl_config ov5693_controls[] = {
 		.flags = 0,
 	},
 	{
-		.ops = &ctrl_ops,
+		.ops = &ov5693_ctrl_ops,
 		.id = V4L2_CID_FOCUS_RELATIVE,
 		.type = V4L2_CTRL_TYPE_INTEGER,
 		.name = "focus move relative",
@@ -914,6 +956,28 @@ static const struct v4l2_ctrl_config ov5693_controls[] = {
 		.flags = 0,
 	},
 };
+
+static int ov5693_isp_configure(struct ov5693_device *sensor)
+{
+	int ret;
+
+	/* Disable lens correction. */
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT,
+			   OV5693_ISP_CTRL0_REG,
+			   OV5693_ISP_CTRL0_WHITE_BALANCE_EN |
+			   OV5693_ISP_CTRL0_DPC_BLACK_EN |
+			   OV5693_ISP_CTRL0_DPC_WHITE_EN);
+	if (ret)
+		return ret;
+
+	ret = ov5693_write_reg(sensor->i2c_client, OV5693_8BIT,
+			   OV5693_ISP_CTRL1_REG,
+			   OV5693_ISP_CTRL1_BLC_EN);
+	if (ret)
+		return ret;
+
+	return 0;
+}
 
 static int ov5693_init(struct v4l2_subdev *sd)
 {
@@ -955,6 +1019,7 @@ static int ov5693_init(struct v4l2_subdev *sd)
 		ov5693_t_focus_abs(sd, 0);
 	}
 
+	ov5693_isp_configure(dev);
 	mutex_unlock(&dev->input_lock);
 
 	return 0;
@@ -1067,8 +1132,8 @@ static int ov5693_s_power(struct v4l2_subdev *sd, int on)
 	if (!ret) {
 		ret = ov5693_init(sd);
 		/* restore settings */
-		ov5693_res = ov5693_res_preview;
-		N_RES = N_RES_PREVIEW;
+		ov5693_res = ov5693_res_video;
+		N_RES = N_RES_VIDEO;
 	}
 
 	return ret;
@@ -1249,6 +1314,8 @@ static int ov5693_set_fmt(struct v4l2_subdev *sd,
 		goto mutex_unlock;
 	}
 
+
+
 	/*
 	 * After sensor settings are set to HW, sometimes stream is started.
 	 * This would cause ISP timeout because ISP is not ready to receive
@@ -1262,6 +1329,55 @@ static int ov5693_set_fmt(struct v4l2_subdev *sd,
 mutex_unlock:
 	mutex_unlock(&dev->input_lock);
 	return ret;
+}
+
+static const struct v4l2_rect *
+__ov5693_get_pad_crop(struct ov5693_device *dev, struct v4l2_subdev_pad_config *cfg,
+		      unsigned int pad, enum v4l2_subdev_format_whence which)
+{
+	switch (which) {
+	case V4L2_SUBDEV_FORMAT_TRY:
+		return v4l2_subdev_get_try_crop(&dev->sd, cfg, pad);
+	case V4L2_SUBDEV_FORMAT_ACTIVE:
+		return &dev->mode->crop;
+	}
+
+	return NULL;
+}
+static int ov5693_get_selection(struct v4l2_subdev *sd,
+				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_selection *sel)
+{
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP: {
+		struct ov5693_device *dev = to_ov5693_sensor(sd);
+
+		mutex_lock(&dev->input_lock);
+		sel->r = *__ov5693_get_pad_crop(dev, cfg, sel->pad,
+						sel->which);
+		mutex_unlock(&dev->input_lock);
+
+		return 0;
+	}
+
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		sel->r.top = 0;
+		sel->r.left = 0;
+		sel->r.width = OV5693_NATIVE_WIDTH;
+		sel->r.height = OV5693_NATIVE_HEIGHT;
+
+		return 0;
+
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+		sel->r.top = OV5693_PIXEL_ARRAY_TOP;
+		sel->r.left = OV5693_PIXEL_ARRAY_LEFT;
+		sel->r.width = OV5693_PIXEL_ARRAY_WIDTH;
+		sel->r.height = OV5693_PIXEL_ARRAY_HEIGHT;
+
+		return 0;
+	}
+
+	return -EINVAL;
 }
 
 static int ov5693_get_fmt(struct v4l2_subdev *sd,
@@ -1458,6 +1574,7 @@ static const struct v4l2_subdev_pad_ops ov5693_pad_ops = {
 	.enum_frame_size = ov5693_enum_frame_size,
 	.get_fmt = ov5693_get_fmt,
 	.set_fmt = ov5693_set_fmt,
+	.get_selection = ov5693_get_selection,
 };
 
 static const struct v4l2_subdev_ops ov5693_ops = {
@@ -1487,9 +1604,11 @@ static int ov5693_remove(struct i2c_client *client)
 static int ov5693_init_controls(struct ov5693_device *ov5693)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&ov5693->sd);
+	const struct v4l2_ctrl_ops *ops = &ov5693_ctrl_ops;
 	struct v4l2_ctrl *ctrl;
 	unsigned int i;
 	int ret;
+	int hblank;
 
 	ret = v4l2_ctrl_handler_init(&ov5693->ctrl_handler,
 				     ARRAY_SIZE(ov5693_controls));
@@ -1518,6 +1637,27 @@ static int ov5693_init_controls(struct ov5693_device *ov5693)
 		ov5693_remove(client);
 		return ov5693->ctrl_handler.error;
 	}
+
+	/* Exposure */
+
+	v4l2_ctrl_new_std(&ov5693->ctrl_handler, ops, V4L2_CID_EXPOSURE, 16, 1048575, 16,
+			  512);
+
+	/* Gain */
+
+	v4l2_ctrl_new_std(&ov5693->ctrl_handler, ops, V4L2_CID_GAIN, 0, 511, 1, 16);
+
+	/* Flip */
+
+	v4l2_ctrl_new_std(&ov5693->ctrl_handler, ops, V4L2_CID_HFLIP, 0, 1, 1, 0);
+	v4l2_ctrl_new_std(&ov5693->ctrl_handler, ops, V4L2_CID_VFLIP, 0, 1, 1, 0);
+
+	hblank = OV5693_PPL_DEFAULT - ov5693->mode->width;
+	ov5693->hblank = v4l2_ctrl_new_std(&ov5693->ctrl_handler, ops,
+					   V4L2_CID_HBLANK, hblank, hblank,
+					   1, hblank);
+	if (ov5693->hblank)
+		ov5693->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	/* Use same lock for controls as for everything else. */
 	ov5693->ctrl_handler.lock = &ov5693->input_lock;
@@ -1662,6 +1802,7 @@ static int ov5693_probe(struct i2c_client *client)
 		return ret;
 	}
 	dep_dev = ov5693->dep_dev;
+	ov5693->i2c_client = client;
 
 	ret = gpio_crs_get(ov5693, dep_dev);
 	if (ret) {
@@ -1677,6 +1818,7 @@ static int ov5693_probe(struct i2c_client *client)
 	ov5693->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ov5693->format.code = MEDIA_BUS_FMT_SBGGR10_1X10;
 	ov5693->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ov5693->mode = &ov5693_res_video[N_RES_VIDEO-1];
 
 	ret = ov5693_init_controls(ov5693);
 	if (ret)
