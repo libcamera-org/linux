@@ -852,12 +852,16 @@ static int ov5693_sensor_init(struct ov5693_device *ov5693)
 
 static void ov5693_sensor_powerdown(struct ov5693_device *ov5693)
 {
+	usleep_range(30000, 31000);
 	gpiod_set_value_cansleep(ov5693->reset, 1);
 	gpiod_set_value_cansleep(ov5693->powerdown, 1);
 
+	usleep_range(30000, 31000);
 	regulator_bulk_disable(OV5693_NUM_SUPPLIES, ov5693->supplies);
 
+	usleep_range(30000, 31000);
 	clk_disable_unprepare(ov5693->clk);
+	usleep_range(30000, 31000);
 }
 
 static int ov5693_sensor_powerup(struct ov5693_device *ov5693)
